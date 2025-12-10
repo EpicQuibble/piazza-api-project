@@ -11,6 +11,7 @@ Usage:
 """
 
 import time
+import random
 from piazza_api import Piazza
 from piazza_api.rpc import PiazzaRPC
 from datetime import datetime
@@ -25,7 +26,7 @@ class PiazzaPollBot:
         Args:
             email: Your Piazza email
             password: Your Piazza password
-            class_id: The class ID (e.g., 'jx9ab8cd9ef')
+            class_id: The class ID (e.g., 'jx7ab2cd4ef')
             poll_answer_index: Which option to select (0 = first option, 1 = second, etc.)
             check_interval: How often to check for new polls (in seconds)
         """
@@ -52,6 +53,11 @@ class PiazzaPollBot:
             # Share the session cookies between Piazza and RPC
             self.rpc.session = self.network._rpc.session
             
+            # Set browser-like user agent to avoid detection
+            self.rpc.session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0'
+            })
+            
             print(f"[{self._timestamp()}] Successfully logged in!")
             return True
         except Exception as e:
@@ -67,8 +73,38 @@ class PiazzaPollBot:
     def get_all_posts(self):
         """Retrieve all posts from the class"""
         try:
-            feed = self.network.iter_all_posts(limit=999999)
-            return list(feed)
+            # Use the feed endpoint instead of iter_all_posts to avoid rate limiting
+            # The feed gives us all posts in one request instead of fetching each individually
+            feed = self.network.get_feed(limit=10, offset=0)
+            post_ids = [post['id'] for post in feed.get('feed', [])]
+            
+            print(f"[{self._timestamp()}] Found {len(post_ids)} posts in feed")
+            
+            # Fetch full details for each post, but with rate limiting protection
+            posts = []
+            for i, post_id in enumerate(post_ids):
+                try:
+                    # Add small delay between requests to avoid "too fast" error
+                    if i >= 0:  # Don't delay before first request
+                        time.sleep(random.uniform(0.7, 0.9))  # 700-900ms between posts
+                    
+                    post = self.network.get_post(post_id)
+                    posts.append(post)
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if 'too fast' in error_msg or 'wait' in error_msg:
+                        # Hit rate limit, wait longer and retry
+                        print(f"[{self._timestamp()}] Rate limit hit, waiting 2 seconds...")
+                        time.sleep(2)
+                        try:
+                            post = self.network.get_post(post_id)
+                            posts.append(post)
+                        except:
+                            print(f"[{self._timestamp()}] Could not fetch post {post_id} after retry, skipping")
+                    else:
+                        print(f"[{self._timestamp()}] Error fetching post {post_id}: {str(e)[:100]}")
+            
+            return posts
         except Exception as e:
             print(f"[{self._timestamp()}] Error fetching posts: {e}")
             return []
@@ -184,6 +220,11 @@ class PiazzaPollBot:
             # Use the correct API format discovered from browser network inspection
             print(f"[{self._timestamp()}] Submitting vote using content.vote API...")
             
+            # Add human-like delay before voting (2-5 seconds)
+            delay = random.uniform(2, 5)
+            print(f"[{self._timestamp()}] Waiting {delay:.1f} seconds before submitting (human-like delay)...")
+            time.sleep(delay)
+            
             try:
                 response = self.rpc.request(
                     method="content.vote",
@@ -195,7 +236,7 @@ class PiazzaPollBot:
                 
                 # Check if response indicates success
                 if response.get('error') is None:
-                    print(f"[{self._timestamp()}] ✓ SUCCESS! Poll answered")
+                    print(f"[{self._timestamp()}] !!!!!!!!!!!! Poll answered !!!!!!!!!!!!")
                     print(f"[{self._timestamp()}] Selected option: {selected_text} (ID: {selected_id})")
                     
                     # Show vote results
@@ -294,7 +335,12 @@ class PiazzaPollBot:
                 print(f"[{self._timestamp()}]   -> This is a new, open poll! Attempting to answer...")
                 new_polls_found += 1
                 self.answer_poll(post)
-                time.sleep(2)  # Be respectful with API calls
+                
+                # Add random delay between polls to seem more human
+                if new_polls_found > 0:
+                    inter_poll_delay = random.uniform(2, 5)
+                    print(f"[{self._timestamp()}] Waiting {inter_poll_delay:.1f}s before checking next poll...")
+                    time.sleep(inter_poll_delay)
         
         print(f"\n[{self._timestamp()}] Summary:")
         print(f"[{self._timestamp()}]   Total polls found: {polls_found}")
@@ -321,8 +367,15 @@ class PiazzaPollBot:
         try:
             while True:
                 self.check_for_polls()
-                print(f"[{self._timestamp()}] Waiting {self.check_interval} seconds before next check...\n")
-                time.sleep(self.check_interval)
+                
+                # Randomize check interval to avoid perfect timing patterns
+                # Use base interval +/- 25% random variation
+                variation = self.check_interval * 0.25
+                randomized_interval = self.check_interval + random.uniform(-variation, variation)
+                
+                print(f"[{self._timestamp()}] Waiting {randomized_interval:.1f} seconds before next check...")
+                print(f"[{self._timestamp()}] (Base: {self.check_interval}s, Randomized: {randomized_interval:.1f}s)\n")
+                time.sleep(randomized_interval)
                 
         except KeyboardInterrupt:
             print(f"\n[{self._timestamp()}] Bot stopped by user.")
